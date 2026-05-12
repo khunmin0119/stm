@@ -182,6 +182,16 @@ def detect_load_symmetry(loads, beam_length, tol=100):
     return True
 
 
+def segments_cross(p1, p2, p3, p4):
+    """두 선분 (p1-p2)와 (p3-p4)의 교차 여부 판정."""
+    def cp(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+    d1, d2 = cp(p3, p4, p1), cp(p3, p4, p2)
+    d3, d4 = cp(p1, p2, p3), cp(p1, p2, p4)
+    return ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
+           ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0))
+
+
 def resolve_mirror_mode(mirror_mode, loads, beam_length):
     """
     Resolve mirror_mode to boolean decision.
@@ -470,24 +480,6 @@ If loading is symmetric, intermediate positions must also be symmetric about bea
 {"n_intermediate": 0 or 1 or 2, "x_positions": [] or [x1] or [x1, x2], "reasoning": "how SIMP guided this"}"""
 
 
-TOPOLOGY_AGENT_PROMPT = """You are the TOPOLOGY AGENT in a multi-agent Strut-and-Tie Model design team.
-
-Your role: Interpret SIMP topology optimization results and propose an initial node layout.
-You are the FIRST agent in the pipeline — your proposal will be critiqued and possibly revised.
-
-## CONTEXT
-A deep beam STM has FIXED nodes (supports, loads) and INTERMEDIATE nodes.
-Each intermediate x-position creates a vertical pair of nodes (one on top chord, one on bottom chord).
-
-## YOUR JOB
-1. Read the SIMP density distribution description
-2. Identify where diagonal force paths are strongest
-3. Propose x-positions for intermediate intermediate nodes
-4. Explain your reasoning — the Critic will scrutinize it
-
-## OUTPUT FORMAT
-{"n_intermediate": N, "x_positions": [...], "reasoning": "why these positions based on SIMP"}"""
-
 
 CRITIC_AGENT_PROMPT = """You are the CRITIC AGENT in a multi-agent Strut-and-Tie Model design team.
 
@@ -535,66 +527,6 @@ You receive: the original proposal, SIMP data, and the Critic's specific issues.
 
 ## OUTPUT FORMAT
 {"n_intermediate": N, "x_positions": [...], "reasoning": "which Critic issue each change addresses"}"""
-
-
-DECISION_AGENT_PROMPT = """You are the DECISION AGENT in a multi-agent Strut-and-Tie Model design team.
-
-Your role: Choose between the original proposal (from Topology Agent) and the revised version (from Revision Agent).
-You are the final arbiter — your choice goes forward to physical analysis.
-
-## HOW TO DECIDE
-1. Re-read the Critic's issues
-2. Check if the Revision actually addressed those issues
-3. Consider: does the revision introduce NEW problems while fixing old ones?
-4. Trust the Critic's severity rating:
-   - "major" → revision is usually better (unless it's clearly worse)
-   - "minor" → either could work; pick the one with cleaner reasoning
-   - "none" → original was already fine
-
-## OUTPUT FORMAT
-{
-  "choice": "original" | "revised",
-  "justification": "one-sentence reason based on Critic's issues"
-}"""
-
-
-ENGINEERING_REVIEWER_PROMPT = """You are an ENGINEERING REVIEWER for Strut-and-Tie Models (STM).
-
-The STM has already passed all structural rule checks by code.
-Your job: assess ENGINEERING QUALITY with specific criteria.
-
-## CHECKLIST (score each 1-3, then average)
-1. LOAD PATH: Does EVERY load point have at least one diagonal strut going toward a support?
-   - 3: All loads have direct diagonal paths to supports
-   - 2: Most loads have diagonal paths
-   - 1: Some loads rely only on horizontal transfer (no diagonal)
-
-2. FORCE FLOW: Do struts follow natural compression paths (roughly 45 from loads to supports)?
-   - 3: Diagonals are 35-55 degrees (near optimal)
-   - 2: Diagonals are 25-35 or 55-65 degrees (acceptable but not ideal)
-   - 1: Very steep or very shallow diagonals dominate
-
-3. SYMMETRY: If loading is symmetric, is the STM symmetric?
-   - 3: Perfectly symmetric
-   - 2: Minor asymmetry
-   - 1: Clearly asymmetric
-
-4. COMPLETENESS: Are there unsupported spans (long horizontal runs without diagonal bracing)?
-   - 3: Every panel has diagonal bracing
-   - 2: One panel without diagonal
-   - 1: Multiple panels without diagonals
-
-Respond with ONLY a valid JSON object:
-{
-  "load_path_score": 1-3,
-  "force_flow_score": 1-3,
-  "symmetry_score": 1-3,
-  "completeness_score": 1-3,
-  "total_score": average of above (1.0-3.0),
-  "assessment": "ACCEPTABLE" or "QUESTIONABLE",
-  "issues": ["list of specific problems found"],
-  "suggestion": "specific improvement if QUESTIONABLE"
-}"""
 
 
 
@@ -687,14 +619,6 @@ def enumerate_ground_structure(nodes, beam_height, y_bot=None, y_top=None):
 
     # 4. Diagonal candidates: panel-adjacent pairs with valid angles
     all_xs = sorted(set(round(x) for _, (x, y) in nodes.items()))
-
-    def segments_cross(p1, p2, p3, p4):
-        def cp(o, a, b):
-            return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
-        d1, d2 = cp(p3, p4, p1), cp(p3, p4, p2)
-        d3, d4 = cp(p1, p2, p3), cp(p1, p2, p4)
-        return ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
-               ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0))
 
     candidates = []
     candidate_id = 0
@@ -902,14 +826,6 @@ def code_validate(stm_data, beam_length, beam_height, support_positions=None, lo
                 errors.append(f"Diagonal {n1}-{n2} skips intermediate x={between}")
 
     # Crossing check
-    def segments_cross(p1, p2, p3, p4):
-        def cp(o, a, b):
-            return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
-        d1, d2 = cp(p3, p4, p1), cp(p3, p4, p2)
-        d3, d4 = cp(p1, p2, p3), cp(p1, p2, p4)
-        return ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
-               ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0))
-
     for i in range(len(connections)):
         n1, n2 = connections[i]
         if n1 not in nodes or n2 not in nodes: continue
@@ -1109,6 +1025,17 @@ def check_physical_validity(truss_result, stm_data, loads):
     return True, 'ok'
 
 
+def _map_loads_to_nodes(loads, nodes, beam_height):
+    """하중 위치를 절점에 매핑하여 loads_dict 생성."""
+    loads_dict = {}
+    for load_x, load_fy_kN in loads:
+        for nid, (nx, ny) in nodes.items():
+            if abs(nx - load_x) < 50 and ny > beam_height / 2:
+                loads_dict[nid] = [0.0, float(load_fy_kN) * 1000.0]
+                break
+    return loads_dict
+
+
 def score_stm(stm_data, beam_length, beam_height, loads, support_positions):
     """
     Score STM using truss analysis. Lower = better.
@@ -1123,12 +1050,7 @@ def score_stm(stm_data, beam_length, beam_height, loads, support_positions):
     connections = stm_data['connections']
     supports = stm_data['supports']
 
-    loads_dict = {}
-    for load_x, load_fy_kN in loads:
-        for nid, (nx, ny) in nodes.items():
-            if abs(nx - load_x) < 50 and ny > beam_height / 2:
-                loads_dict[nid] = [0.0, float(load_fy_kN) * 1000.0]
-                break
+    loads_dict = _map_loads_to_nodes(loads, nodes, beam_height)
 
     if loads_dict:
         result = solve_truss(nodes, connections, supports, loads_dict)
@@ -1170,12 +1092,7 @@ def score_stm_detailed(stm_data, beam_length, beam_height, loads, support_positi
     connections = stm_data['connections']
     supports = stm_data['supports']
 
-    loads_dict = {}
-    for load_x, load_fy_kN in loads:
-        for nid, (nx, ny) in nodes.items():
-            if abs(nx - load_x) < 50 and ny > beam_height / 2:
-                loads_dict[nid] = [0.0, float(load_fy_kN) * 1000.0]
-                break
+    loads_dict = _map_loads_to_nodes(loads, nodes, beam_height)
 
     if not loads_dict:
         return {'score': float('inf'), 'analysis_success': False, 'error': 'No load nodes'}
@@ -1566,46 +1483,6 @@ def plot_candidates_comparison(candidates_info, beam_length, beam_height,
     plt.close()
 
 
-def plot_optimizer_comparison(before_stm, after_stm, before_score, after_score,
-                              beam_length, beam_height, loads=None, support_positions=None, save_path=None):
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    L, H = beam_length, beam_height
-    for ax, stm, label, sc in [(ax1, before_stm, 'Before', before_score),
-                                 (ax2, after_stm, 'After', after_score)]:
-        _draw_beam(ax, L, H, loads, support_positions)
-        nodes, connections, supports = stm['nodes'], stm['connections'], stm['supports']
-        for n1_id, n2_id in connections:
-            if n1_id not in nodes or n2_id not in nodes: continue
-            x1, y1 = nodes[n1_id]; x2, y2 = nodes[n2_id]
-            dx, dy = abs(x2-x1), abs(y2-y1)
-            color = '#2563eb' if dy < 50 else ('#16a34a' if dx < 50 else '#dc2626')
-            ax.plot([x1, x2], [y1, y2], color=color, linewidth=2, zorder=2)
-            mx, my = (x1+x2)/2, (y1+y2)/2
-            if dy >= 50 and dx >= 50:
-                angle = math.degrees(math.atan2(dy, dx))
-                ax.annotate(f'{angle:.1f}', (mx, my), fontsize=8, ha='center', color='#475569',
-                           fontweight='bold', bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.85))
-        for nid, (x, y) in nodes.items():
-            if nid in supports:
-                marker = '^' if supports[nid] == 'pin' else 'o'
-                ax.plot(x, y, marker=marker, markersize=12, color='#f59e0b',
-                        markeredgecolor='#d97706', markeredgewidth=2, zorder=4)
-            else:
-                ax.plot(x, y, 'o', markersize=8, color='#1e293b', zorder=4)
-            offset_y = 60 if y > H/2 else -80
-            ax.annotate(nid, (x, y + offset_y), fontsize=10, fontweight='bold', ha='center')
-        ax.set_title(f'{label}\nscore={sc:.4f} | {len(connections)} members',
-                     fontsize=11, fontweight='bold', pad=10)
-    title = f'Optimizer: score {before_score:.4f} -> {after_score:.4f}' if after_score < before_score \
-        else 'Optimizer: No improvement (original kept)'
-    fig.suptitle(title, fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white', edgecolor='none')
-        print(f"  >> Saved: {save_path}")
-    plt.close()
-
-
 # ===========================================================
 # 7. MAS Controller (Versatile Version)
 # ===========================================================
@@ -1624,7 +1501,6 @@ class MASSTMGenerator:
                  reviewer_model="qwen3:32b",
                  critic_model=None,
                  revision_model=None,
-                 decision_model=None,
                  reasoning_model="nemotron-3-nano",
                  max_retries=5,
                  n_candidates=3,
@@ -1637,7 +1513,6 @@ class MASSTMGenerator:
         # Cooperative agent models (default: reuse topology/reviewer)
         self.critic_model = critic_model or reviewer_model
         self.revision_model = revision_model or topology_model
-        self.decision_model = decision_model or reviewer_model
         # Reasoning-specialized model for calculation
         self.reasoning_model = reasoning_model
         self.max_retries = max_retries
@@ -1650,22 +1525,58 @@ class MASSTMGenerator:
         return os.path.join(self.output_dir, filename)
 
     @staticmethod
+    def _compute_dy(y_bot, y_top, H):
+        """코드/타이 간 수직 거리 계산. fallback 포함."""
+        if y_bot is not None and y_top is not None:
+            return y_top - y_bot
+        return H - 275
+
+    def _compute_x_range(self, L, H, loads, support_positions, y_bot, y_top, use_mirror):
+        """mirror 모드에 따른 중간 절점 유효 x-range 및 max_intermediate 계산."""
+        dy = self._compute_dy(y_bot, y_top, H)
+        sorted_supports = sorted(support_positions, key=lambda s: s[0])
+        sorted_loads = sorted(loads, key=lambda l: l[0])
+
+        if use_mirror:
+            sup_x = sorted_supports[0][0]
+            load_x = sorted_loads[0][0]
+            x_lo, x_hi = self.compute_x1_range(sup_x, load_x, L, dy)
+            max_intermediate = max(1, int(round(L / H)) - 1)
+        else:
+            dx_min = dy / math.tan(math.radians(65))
+            x_lo = sorted_supports[0][0] + max(dx_min, 50)
+            x_hi = sorted_supports[-1][0] - max(dx_min, 50)
+            max_intermediate = max(1, int(round(L / H)) * 2 - 2)
+
+        return x_lo, x_hi, max_intermediate
+
+    def _build_full_stm(self, layout, L, H, loads, support_positions, y_bot, y_top, use_mirror):
+        """layout으로부터 완전한 STM (nodes, connections, supports) 빌드."""
+        nodes_data = self._build_nodes_from_layout(
+            layout, L, H, loads, support_positions, y_bot, y_top, use_mirror=use_mirror
+        )
+        fixed, candidates = enumerate_ground_structure(
+            nodes_data['nodes'], H, y_bot=y_bot, y_top=y_top
+        )
+        all_diag_indices = self._remove_crossing_selections(
+            candidates, list(range(len(candidates)))
+        )
+        all_connections = list(fixed)
+        for idx in all_diag_indices:
+            all_connections.append(candidates[idx]['nodes'])
+
+        return {
+            'nodes': nodes_data['nodes'],
+            'connections': all_connections,
+            'supports': nodes_data['supports']
+        }, fixed, candidates, all_diag_indices
+
+    @staticmethod
     def compute_x1_range(sup_x, load_x, beam_length, dy):
         dx_min = dy / math.tan(math.radians(65))
         x1_lo = max(sup_x + dx_min, sup_x + 50)
         x1_hi = min(load_x - dx_min, load_x - 50)
         return x1_lo, x1_hi
-
-    def _distribute_x1_values(self, sup_x, load_x, beam_length, dy, n):
-        x1_lo, x1_hi = self.compute_x1_range(sup_x, load_x, beam_length, dy)
-        if x1_hi <= x1_lo:
-            return [int((sup_x + load_x) / 2)] * n
-        margin = (x1_hi - x1_lo) * 0.05
-        x1_lo_safe = x1_lo + margin
-        x1_hi_safe = x1_hi - margin
-        if n == 1:
-            return [int((x1_lo_safe + x1_hi_safe) / 2)]
-        return [int(x1_lo_safe + i / (n - 1) * (x1_hi_safe - x1_lo_safe)) for i in range(n)]
 
     # ── Stage 1-A: LLM decides node layout ──
     def _decide_node_layout(self, L, H, loads, supports, simp_summary="",
@@ -1679,35 +1590,14 @@ class MASSTMGenerator:
             use_mirror: if True, LLM decides left-half only (x ∈ [x1_lo, x1_hi]), code mirrors.
                         if False, LLM decides entire beam (x ∈ [sup_left+margin, sup_right-margin]).
         """
-        # Compute dy from chord positions
-        if y_bot is not None and y_top is not None:
-            dy = y_top - y_bot
-        else:
-            dy = H - 275  # fallback for backward compatibility
+        dy = self._compute_dy(y_bot, y_top, H)
+        x_lo, x_hi, max_intermediate = self._compute_x_range(
+            L, H, loads, supports, y_bot, y_top, use_mirror
+        )
+        range_desc = "left-half only (right-half auto-mirrors)" if use_mirror else "entire beam (no auto-mirroring)"
 
         sorted_supports = sorted(supports, key=lambda s: s[0])
         sorted_loads = sorted(loads, key=lambda l: l[0])
-
-        # Determine x-range and max_intermediate based on mirror mode
-        if use_mirror:
-            # Left-half only range
-            sup_x = sorted_supports[0][0]
-            load_x = sorted_loads[0][0]
-            x_lo, x_hi = self.compute_x1_range(sup_x, load_x, L, dy)
-            # Max intermediate from beam geometry (half-beam perspective)
-            max_intermediate = max(1, int(round(L / H)) - 1)
-            range_desc = "left-half only (right-half auto-mirrors)"
-        else:
-            # Whole-beam range — LLM decides all x-positions
-            sup_left = sorted_supports[0][0]
-            sup_right = sorted_supports[-1][0]
-            # Minimum distance from support (to keep valid diagonal angles)
-            dx_min = dy / math.tan(math.radians(65))
-            x_lo = sup_left + max(dx_min, 50)
-            x_hi = sup_right - max(dx_min, 50)
-            # Max intermediate: about one per (1*H) span, doubled since covering whole beam
-            max_intermediate = max(1, int(round(L / H)) * 2 - 2)
-            range_desc = "entire beam (no auto-mirroring)"
 
         # 0 nodes: no LLM needed
         if forced_n_intermediate == 0:
@@ -1865,7 +1755,7 @@ class MASSTMGenerator:
         return layout
 
     def _critic_review(self, layout, L, H, loads, supports, simp_summary,
-                        dy, y_bot, y_top, verbose=True):
+                        y_bot, y_top, verbose=True):
         """
         Stage 1-B: Critic Agent reviews the proposal.
         Returns structured critique with severity and specific issues.
@@ -1877,6 +1767,8 @@ class MASSTMGenerator:
                 'affected_positions': [],
                 'recommendation': 'Direct strut model — no intermediate nodes to review'
             }
+
+        dy = self._compute_dy(y_bot, y_top, H)
 
         # Compute diagonal angles for Critic's reference
         sorted_supports = sorted(supports, key=lambda s: s[0])
@@ -1960,27 +1852,10 @@ class MASSTMGenerator:
                 print(f"    [Revision Agent] skipped (severity=none)")
             return dict(original_layout)  # copy
 
-        # Compute x-range for validation (reuse _decide_node_layout logic)
-        if y_bot is not None and y_top is not None:
-            dy = y_top - y_bot
-        else:
-            dy = H - 275
-
-        sorted_supports = sorted(supports, key=lambda s: s[0])
-        sorted_loads = sorted(loads, key=lambda l: l[0])
-
-        if use_mirror:
-            sup_x = sorted_supports[0][0]
-            load_x = sorted_loads[0][0]
-            x_lo, x_hi = self.compute_x1_range(sup_x, load_x, L, dy)
-            max_intermediate = max(1, int(round(L / H)) - 1)
-        else:
-            sup_left = sorted_supports[0][0]
-            sup_right = sorted_supports[-1][0]
-            dx_min = dy / math.tan(math.radians(65))
-            x_lo = sup_left + max(dx_min, 50)
-            x_hi = sup_right - max(dx_min, 50)
-            max_intermediate = max(1, int(round(L / H)) * 2 - 2)
+        dy = self._compute_dy(y_bot, y_top, H)
+        x_lo, x_hi, max_intermediate = self._compute_x_range(
+            L, H, loads, supports, y_bot, y_top, use_mirror
+        )
 
         user_prompt = (
             f"ORIGINAL PROPOSAL (from Topology Agent):\n"
@@ -2054,66 +1929,6 @@ class MASSTMGenerator:
 
         return revised_layout
 
-    def _decision_step(self, original_layout, revised_layout, critique,
-                        verbose=True):
-        """
-        Stage 1-D: Decision Agent chooses between original and revised.
-        Returns the chosen layout and the decision record.
-        """
-        # Identical proposals: skip
-        if (original_layout.get('x_positions') == revised_layout.get('x_positions')
-            and original_layout.get('n_intermediate') == revised_layout.get('n_intermediate')):
-            if verbose:
-                print(f"    [Decision Agent] skipped (original == revised)")
-            return original_layout, {
-                'choice': 'original',
-                'justification': 'original and revised are identical'
-            }
-
-        # Critic said 'none' → trust original
-        if critique.get('severity') == 'none':
-            return original_layout, {
-                'choice': 'original',
-                'justification': 'Critic found no issues'
-            }
-
-        user_prompt = (
-            f"CRITIC'S ASSESSMENT:\n"
-            f"  severity: {critique.get('severity')}\n"
-            f"  issues: {critique.get('issues')}\n\n"
-            f"ORIGINAL PROPOSAL (Topology Agent):\n"
-            f"  x_positions: {original_layout.get('x_positions')}\n"
-            f"  reasoning: {original_layout.get('reasoning', '')[:150]}\n\n"
-            f"REVISED PROPOSAL (Revision Agent):\n"
-            f"  x_positions: {revised_layout.get('x_positions')}\n"
-            f"  reasoning: {revised_layout.get('reasoning', '')[:150]}\n\n"
-            "Which proposal is better given the Critic's concerns?\n"
-            'Respond with JSON only: {"choice": "original"|"revised", "justification": "..."}'
-        )
-
-        response = self.client.chat(
-            model=self.decision_model,
-            system=DECISION_AGENT_PROMPT,
-            user=user_prompt,
-            temperature=0.1
-        )
-        decision = parse_json_from_text(response)
-
-        if not decision or decision.get('choice') not in ('original', 'revised'):
-            # Heuristic fallback: trust severity
-            choice = 'revised' if critique.get('severity') == 'major' else 'original'
-            decision = {
-                'choice': choice,
-                'justification': f'Fallback: severity={critique.get("severity")}'
-            }
-
-        if verbose:
-            print(f"    [Decision Agent] choice={decision['choice']}")
-            print(f"      justification: {decision.get('justification', '')[:100]}")
-
-        chosen = revised_layout if decision['choice'] == 'revised' else original_layout
-        return chosen, decision
-
     def _cooperative_layout(self, L, H, loads, supports, simp_summary,
                              y_bot, y_top, temperature=0.4, use_mirror=True,
                              prev_layouts=None, verbose=True, design_hint=""):
@@ -2128,10 +1943,7 @@ class MASSTMGenerator:
             (layouts_list, agent_trace)
             layouts_list: [original] or [original, revised] (if different)
         """
-        if y_bot is not None and y_top is not None:
-            dy = y_top - y_bot
-        else:
-            dy = H - 275
+        dy = self._compute_dy(y_bot, y_top, H)
 
         if verbose:
             print(f"  ┌── Cooperative Agent Flow ──┐")
@@ -2167,7 +1979,7 @@ class MASSTMGenerator:
         # Stage B: Critic
         critique = self._critic_review(
             topology_layout, L, H, loads, supports, simp_summary,
-            dy, y_bot, y_top, verbose=verbose
+            y_bot, y_top, verbose=verbose
         )
 
         # Stage C: Revision
@@ -2234,27 +2046,9 @@ class MASSTMGenerator:
             'reasoning': 'nelder-mead evaluation'
         }
 
-        # Build nodes
-        nodes_data = self._build_nodes_from_layout(
-            layout, L, H, loads, support_positions, y_bot, y_top, use_mirror=use_mirror
+        stm, _, _, _ = self._build_full_stm(
+            layout, L, H, loads, support_positions, y_bot, y_top, use_mirror
         )
-
-        # Build connections
-        fixed, candidates = enumerate_ground_structure(
-            nodes_data['nodes'], H, y_bot=y_bot, y_top=y_top
-        )
-        all_diag_indices = self._remove_crossing_selections(
-            candidates, list(range(len(candidates)))
-        )
-        all_connections = list(fixed)
-        for idx in all_diag_indices:
-            all_connections.append(candidates[idx]['nodes'])
-
-        stm = {
-            'nodes': nodes_data['nodes'],
-            'connections': all_connections,
-            'supports': nodes_data['supports']
-        }
 
         # Validate
         val = code_validate(stm, L, H, support_positions=support_positions, loads=loads)
@@ -2310,22 +2104,9 @@ class MASSTMGenerator:
             return layout, {'skipped': True, 'reason': 'scipy not available'}
 
         # Compute bounds
-        if y_bot is not None and y_top is not None:
-            dy = y_top - y_bot
-        else:
-            dy = H - 275
-
-        sorted_supports = sorted(support_positions, key=lambda s: s[0])
-        sorted_loads = sorted(loads, key=lambda l: l[0])
-
-        if use_mirror:
-            x_lo, x_hi = self.compute_x1_range(
-                sorted_supports[0][0], sorted_loads[0][0], L, dy
-            )
-        else:
-            dx_min = dy / math.tan(math.radians(65))
-            x_lo = sorted_supports[0][0] + max(dx_min, 50)
-            x_hi = sorted_supports[-1][0] - max(dx_min, 50)
+        x_lo, x_hi, _ = self._compute_x_range(
+            L, H, loads, support_positions, y_bot, y_top, use_mirror
+        )
 
         # Initial score
         init_score = self._build_and_score(
@@ -2496,172 +2277,10 @@ class MASSTMGenerator:
                 final.append(idx)
         return final
 
-    # ── Generate candidates from one topology call ──
-    def _generate_one_candidate(self, L, H, b, loads, support_positions,
-                                 candidate_id, simp_summary="",
-                                 forced_n_intermediate=None, verbose=True,
-                                 y_bot=None, y_top=None, temperature=0.4,
-                                 use_mirror=True, prev_layouts=None,
-                                 design_hint=""):
-        """
-        One topology call → potentially 2 candidates (original + revised).
-        Returns list of (stm, record) tuples.
-        """
-        cid = candidate_id
-        results = []
-
-        nodes_label = f"{forced_n_intermediate} nodes (forced)" if forced_n_intermediate is not None else "free"
-        mirror_tag = "M" if use_mirror else "NM"
-        if verbose:
-            print(f"\n  ┌── Topology Call {cid} [{nodes_label}, {mirror_tag}] ──┐")
-
-        # ── Stage 1-A: Get layouts from cooperative flow ──
-        layouts_list = []
-        agent_trace = None
-
-        for attempt in range(1, self.max_retries + 1):
-            if forced_n_intermediate == 0:
-                layout = self._decide_node_layout(L, H, loads, support_positions,
-                                                   forced_n_intermediate=0, y_bot=y_bot, y_top=y_top,
-                                                   temperature=temperature,
-                                                   use_mirror=use_mirror)
-                if layout:
-                    layouts_list = [layout]
-                if verbose:
-                    print(f"  │ [Code] 0 nodes -> direct strut model")
-                break
-
-            if verbose:
-                print(f"  │ [Cooperative Flow] Attempt {attempt}/{self.max_retries} (temp={temperature:.2f})...")
-
-            t0 = time.time()
-            layouts_list, agent_trace = self._cooperative_layout(
-                L, H, loads, support_positions,
-                simp_summary=simp_summary,
-                y_bot=y_bot, y_top=y_top,
-                temperature=temperature,
-                use_mirror=use_mirror,
-                prev_layouts=prev_layouts,
-                verbose=verbose,
-                design_hint=design_hint
-            )
-            elapsed = time.time() - t0
-
-            if not layouts_list:
-                if verbose: print(f"  │   [FAIL] Cooperative flow failed ({elapsed:.1f}s)")
-                continue
-
-            if verbose:
-                print(f"  │   Total {elapsed:.1f}s -> {len(layouts_list)} layout(s)")
-            break
-
-        if not layouts_list:
-            if verbose: print(f"  │ [FAIL] No layouts\n  └──────────────────────────┘")
-            results.append((None, {'candidate_id': cid, 'result': 'LAYOUT_FAIL'}))
-            return results
-
-        # ── Process each layout ──
-        for li, layout in enumerate(layouts_list):
-            sub_id = f"{cid}" if len(layouts_list) == 1 else f"{cid}{'a' if li == 0 else 'b'}"
-            record = {'candidate_id': sub_id, 'result': None, 'layout': layout}
-            if agent_trace is not None:
-                record['agent_trace'] = agent_trace
-            record['layout_source'] = 'topology' if li == 0 else 'revision'
-
-            if verbose:
-                src = "Topology" if li == 0 else "Revision"
-                print(f"  │ [{src}] n_intermediate={layout['n_intermediate']}, x={layout['x_positions']}")
-
-            # ── Conditional Nelder-Mead: only when LLM position is physically invalid ──
-            if layout.get('n_intermediate', 0) > 0:
-                # Test LLM's position first
-                test_score = self._build_and_score(
-                    layout['x_positions'], layout['n_intermediate'],
-                    L, H, b, loads, support_positions,
-                    y_bot, y_top, use_mirror
-                )
-                if test_score >= 1e15:
-                    # LLM position is invalid → Nelder-Mead tries to fix it
-                    if verbose:
-                        print(f"    [LLM position invalid] Running Nelder-Mead correction...")
-                    optimized_layout, opt_record = self._optimize_x_nelder_mead(
-                        layout, L, H, b, loads, support_positions,
-                        y_bot, y_top, use_mirror=use_mirror, verbose=verbose
-                    )
-                    record['optimization'] = opt_record
-                    if opt_record.get('improved'):
-                        layout = optimized_layout
-                        record['layout_optimized'] = layout
-                else:
-                    if verbose:
-                        print(f"    [LLM position valid] ΣTL={test_score/1e6:.1f} kN·m — Nelder-Mead skipped")
-
-            # ── Build nodes ──
-            nodes_data = self._build_nodes_from_layout(layout, L, H, loads, support_positions,
-                                                        y_bot, y_top, use_mirror=use_mirror)
-            n_nodes = len(nodes_data['nodes'])
-            if verbose:
-                print(f"  │ [Code] Built {n_nodes} nodes")
-
-            plot_nodes_only(nodes_data, L, H, loads=loads, support_positions=support_positions,
-                save_path=self._save_path(f'01_C{sub_id}_nodes.png'),
-                title=f'C{sub_id} — {n_nodes}n ({layout["n_intermediate"]}p, x={layout["x_positions"]})')
-
-            # ── Build connections ──
-            fixed, candidates = enumerate_ground_structure(nodes_data['nodes'], H,
-                                                            y_bot=y_bot, y_top=y_top)
-            all_diag_indices = self._remove_crossing_selections(candidates, list(range(len(candidates))))
-            all_connections = list(fixed)
-            for idx in all_diag_indices:
-                all_connections.append(candidates[idx]['nodes'])
-
-            if verbose:
-                print(f"  │ [Code] Connections: {len(fixed)} fixed + {len(all_diag_indices)} diags = {len(all_connections)} total")
-                for c in candidates:
-                    incl = "✓" if c['id'] in all_diag_indices else "✗"
-                    print(f"  │   [{incl}] {c['description']}")
-
-            stm_candidate = {
-                'nodes': nodes_data['nodes'],
-                'connections': all_connections,
-                'supports': nodes_data['supports'],
-                'design_notes': f"layout={layout}, auto_diags={all_diag_indices}"
-            }
-
-            val_result = code_validate(stm_candidate, L, H,
-                                       support_positions=support_positions, loads=loads)
-
-            if val_result['valid']:
-                plot_stm(stm_candidate, L, H, loads=loads, support_positions=support_positions,
-                    save_path=self._save_path(f'02_C{sub_id}_PASS.png'),
-                    title=f'C{sub_id} [{n_nodes}n, {len(all_connections)}m] [PASS]', status='PASS')
-                if verbose:
-                    print(f"  │   [PASS]")
-                    for w in val_result['warnings']: print(f"  │     Warning: {w}")
-                record['result'] = 'PASS'
-                results.append((stm_candidate, record))
-            else:
-                plot_stm(stm_candidate, L, H, loads=loads, support_positions=support_positions,
-                    save_path=self._save_path(f'02_C{sub_id}_FAIL.png'),
-                    title=f'C{sub_id} [FAIL]', errors=val_result['errors'], status='FAIL')
-                if verbose:
-                    print(f"  │   [FAIL]")
-                    for e in val_result['errors'][:5]: print(f"  │     {e}")
-                record['result'] = 'VALIDATE_FAIL'
-                results.append((None, record))
-
-        if verbose:
-            print(f"  └──────────────────────────┘")
-
-        return results
-
     # ── Grammar-based STM Generation ──
     def _best_of_n(self, L, H, b, loads, support_positions, simp_summary="",
                     verbose=True, y_bot=None, y_top=None, use_mirror=True):
-        if y_bot is not None and y_top is not None:
-            dy = y_top - y_bot
-        else:
-            dy = H - 275
+        dy = self._compute_dy(y_bot, y_top, H)
 
         sorted_supports = sorted(support_positions, key=lambda s: s[0])
         sorted_loads = sorted(loads, key=lambda l: l[0])
@@ -2841,16 +2460,15 @@ class MASSTMGenerator:
         nid = 0
 
         for x in sorted(set(bottom_xs)):
-            node_name = chr(65 + nid)
+            node_name = generate_node_id(nid)
             nodes[node_name] = (float(x), y_bot)
-            # Check if this is a support
             for sx, stype in sorted_supports:
                 if abs(x - sx) < 50:
                     supports_dict[node_name] = stype
             nid += 1
 
         for x in sorted(set(top_xs)):
-            node_name = chr(65 + nid)
+            node_name = generate_node_id(nid)
             nodes[node_name] = (float(x), y_top)
             nid += 1
 
@@ -2934,17 +2552,9 @@ class MASSTMGenerator:
                         'x_positions': nm_xs,
                         'reasoning': f'NM from {intermediate_xs}'
                     }
-                    nm_nodes = self._build_nodes_from_layout(
-                        nm_layout_full, L, H, loads, support_positions, y_bot, y_top,
-                        use_mirror=False
+                    nm_stm, _, _, _ = self._build_full_stm(
+                        nm_layout_full, L, H, loads, support_positions, y_bot, y_top, False
                     )
-                    nm_stm = {'nodes': nm_nodes['nodes'], 'connections': [], 'supports': nm_nodes['supports']}
-                    nm_f, nm_d = enumerate_ground_structure(nm_nodes['nodes'], H, y_bot=y_bot, y_top=y_top)
-                    nm_di = self._remove_crossing_selections(nm_d, list(range(len(nm_d))))
-                    nm_c = list(nm_f)
-                    for idx in nm_di:
-                        nm_c.append(nm_d[idx]['nodes'])
-                    nm_stm['connections'] = nm_c
                     nm_v = code_validate(nm_stm, L, H, support_positions=support_positions, loads=loads)
                     if nm_v['valid']:
                         nm_sc = score_stm(nm_stm, L, H, loads, support_positions)
@@ -2969,47 +2579,6 @@ class MASSTMGenerator:
 
         candidates = [(stm, sc, 'G1')]
         return stm, step_log, candidates
-
-    # ── Phase 2: Engineering Review ──
-    def _engineering_review(self, stm_data, L, H, loads, support_positions, verbose=True):
-        if verbose:
-            print(f"\n{'='*55}")
-            print(f"  PHASE 2: Engineering Review ({self.reviewer_model})")
-            print(f"{'='*55}")
-
-        t0 = time.time()
-
-        # Build load/support description dynamically
-        load_desc = ", ".join(
-            f"x={lx:.0f}mm ({abs(lfy):.0f}kN)" for lx, lfy in sorted(loads, key=lambda l: l[0])
-        )
-        sup_desc = ", ".join(
-            f"x={sx:.0f}mm ({stype})" for sx, stype in sorted(support_positions, key=lambda s: s[0])
-        )
-
-        response = self.client.chat(
-            model=self.reviewer_model, system=ENGINEERING_REVIEWER_PROMPT,
-            user=(
-                f"Beam: {L}x{H}mm, L/H={L/H:.2f}\n"
-                f"Loads: {load_desc}\n"
-                f"Supports: {sup_desc}\n\n"
-                f"STM:\n{json.dumps(stm_data, indent=2)}\n\n"
-                f"Assess using the 4-criteria checklist."
-            ), temperature=0.1)
-        elapsed = time.time() - t0
-
-        review = parse_json_from_text(response)
-        if review and verbose:
-            print(f"  Assessment: {review.get('assessment','?')} ({review.get('total_score','?')}/3.0)")
-            for k in ['load_path_score','force_flow_score','symmetry_score','completeness_score']:
-                print(f"    {k}: {review.get(k,'?')}/3")
-            for iss in review.get('issues', []):
-                print(f"  Issue: {iss}")
-
-        if review:
-            self.log.append({'phase': 'engineering_review', **review})
-            return review
-        return {'assessment': 'ACCEPTABLE', 'total_score': 0, 'issues': []}
 
     # ── KDS Verification & Feedback Loop ──
     @staticmethod
@@ -3176,26 +2745,10 @@ class MASSTMGenerator:
                     print(f"  [KDS] Reason: {layout['reasoning'][:100]}")
 
             # Build new STM
-            nodes_data = self._build_nodes_from_layout(
-                layout, L, H, loads, support_positions, y_bot, y_top,
-                use_mirror=use_mirror
+            new_stm, _, _, _ = self._build_full_stm(
+                layout, L, H, loads, support_positions, y_bot, y_top, use_mirror
             )
-            fixed, candidates = enumerate_ground_structure(
-                nodes_data['nodes'], H, y_bot=y_bot, y_top=y_top
-            )
-            all_diag_indices = self._remove_crossing_selections(
-                candidates, list(range(len(candidates)))
-            )
-            all_connections = list(fixed)
-            for idx in all_diag_indices:
-                all_connections.append(candidates[idx]['nodes'])
-
-            new_stm = {
-                'nodes': nodes_data['nodes'],
-                'connections': all_connections,
-                'supports': nodes_data['supports'],
-                'design_notes': f"kds_feedback_loop={loop_i}, layout={layout}"
-            }
+            new_stm['design_notes'] = f"kds_feedback_loop={loop_i}, layout={layout}"
 
             # Validate
             val_result = code_validate(new_stm, L, H,
@@ -3428,7 +2981,6 @@ class MASSTMGenerator:
             trace_summary = None
             if agent_trace:
                 critique = agent_trace.get('critique', {}) or {}
-                decision = agent_trace.get('decision', {}) or {}
                 topology = agent_trace.get('topology', {}) or {}
                 revision = agent_trace.get('revision', {}) or {}
                 trace_summary = {
@@ -3445,10 +2997,6 @@ class MASSTMGenerator:
                     'revision_proposal': {
                         'x_positions': revision.get('x_positions'),
                         'n_intermediate': revision.get('n_intermediate')
-                    },
-                    'decision': {
-                        'choice': decision.get('choice'),
-                        'justification': decision.get('justification', '')
                     }
                 }
 
@@ -3504,7 +3052,7 @@ class MASSTMGenerator:
                 'topology_agent': self.topology_model,
                 'critic_agent': self.critic_model,
                 'revision_agent': self.revision_model,
-                'decision_agent': self.decision_model
+                'reviewer_agent': self.reviewer_model
             }
         }
 
@@ -3629,8 +3177,7 @@ if __name__ == "__main__":
         reviewer_model="qwen3:32b",           # legacy
         critic_model="qwen3:32b",             # legacy
         revision_model="qwen3:32b",           # legacy
-        decision_model="qwen3:32b",           # legacy
-        reasoning_model="nemotron-3-nano",    # legacy
+        reasoning_model="nemotron-3-nano",
         max_retries=5,
         n_candidates=3,
         output_dir=output_dir
@@ -3670,7 +3217,5 @@ if __name__ == "__main__":
                 if trace['critique']['issues']:
                     print(f"    Critic issues:      {trace['critique']['issues'][0][:80]}")
                 print(f"    Revision proposed:  x={trace['revision_proposal']['x_positions']}")
-                print(f"    Decision:           {trace['decision']['choice']} "
-                      f"({trace['decision']['justification'][:80]})")
     else:
         print("\n>> Generation failed.")
