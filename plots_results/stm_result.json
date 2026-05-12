@@ -1,0 +1,357 @@
+{
+  "beam": {
+    "length_mm": 6900,
+    "height_mm": 2000,
+    "width_mm": 500,
+    "L_over_H": 3.45
+  },
+  "chord_positions": {
+    "y_bot": 125.0,
+    "y_top": 1850.0,
+    "wt": 250,
+    "ws": 300
+  },
+  "material": {
+    "cover": 40,
+    "stirrup_dia": 16,
+    "main_bar_dia": 32
+  },
+  "mirror": {
+    "mode": "auto",
+    "use_mirror": true,
+    "reason": "auto: symmetric loads detected"
+  },
+  "loads": [
+    {
+      "x_mm": 2225,
+      "Fy_kN": -2000
+    },
+    {
+      "x_mm": 4675,
+      "Fy_kN": -2000
+    }
+  ],
+  "supports": [
+    {
+      "x_mm": 225,
+      "type": "pin"
+    },
+    {
+      "x_mm": 6675,
+      "type": "roller"
+    }
+  ],
+  "nodes": {
+    "A": {
+      "x": 225,
+      "y": 125.0
+    },
+    "B": {
+      "x": 1300,
+      "y": 125.0
+    },
+    "C": {
+      "x": 1420,
+      "y": 125.0
+    },
+    "D": {
+      "x": 5480,
+      "y": 125.0
+    },
+    "E": {
+      "x": 5600,
+      "y": 125.0
+    },
+    "F": {
+      "x": 6675,
+      "y": 125.0
+    },
+    "G": {
+      "x": 1300,
+      "y": 1850.0
+    },
+    "H": {
+      "x": 1420,
+      "y": 1850.0
+    },
+    "I": {
+      "x": 2225,
+      "y": 1850.0
+    },
+    "J": {
+      "x": 4675,
+      "y": 1850.0
+    },
+    "K": {
+      "x": 5480,
+      "y": 1850.0
+    },
+    "L": {
+      "x": 5600,
+      "y": 1850.0
+    }
+  },
+  "support_nodes": {
+    "A": "pin",
+    "F": "roller"
+  },
+  "members": [
+    {
+      "nodes": [
+        "G",
+        "H"
+      ],
+      "type": "horizontal",
+      "length_mm": 120.0
+    },
+    {
+      "nodes": [
+        "H",
+        "I"
+      ],
+      "type": "horizontal",
+      "length_mm": 805.0
+    },
+    {
+      "nodes": [
+        "I",
+        "J"
+      ],
+      "type": "horizontal",
+      "length_mm": 2450.0
+    },
+    {
+      "nodes": [
+        "J",
+        "K"
+      ],
+      "type": "horizontal",
+      "length_mm": 805.0
+    },
+    {
+      "nodes": [
+        "K",
+        "L"
+      ],
+      "type": "horizontal",
+      "length_mm": 120.0
+    },
+    {
+      "nodes": [
+        "A",
+        "B"
+      ],
+      "type": "horizontal",
+      "length_mm": 1075.0
+    },
+    {
+      "nodes": [
+        "B",
+        "C"
+      ],
+      "type": "horizontal",
+      "length_mm": 120.0
+    },
+    {
+      "nodes": [
+        "C",
+        "D"
+      ],
+      "type": "horizontal",
+      "length_mm": 4060.0
+    },
+    {
+      "nodes": [
+        "D",
+        "E"
+      ],
+      "type": "horizontal",
+      "length_mm": 120.0
+    },
+    {
+      "nodes": [
+        "E",
+        "F"
+      ],
+      "type": "horizontal",
+      "length_mm": 1075.0
+    },
+    {
+      "nodes": [
+        "G",
+        "B"
+      ],
+      "type": "vertical",
+      "length_mm": 1725.0
+    },
+    {
+      "nodes": [
+        "H",
+        "C"
+      ],
+      "type": "vertical",
+      "length_mm": 1725.0
+    },
+    {
+      "nodes": [
+        "K",
+        "D"
+      ],
+      "type": "vertical",
+      "length_mm": 1725.0
+    },
+    {
+      "nodes": [
+        "L",
+        "E"
+      ],
+      "type": "vertical",
+      "length_mm": 1725.0
+    },
+    {
+      "nodes": [
+        "G",
+        "A"
+      ],
+      "type": "diagonal",
+      "length_mm": 2032.5,
+      "angle_deg": 58.1
+    },
+    {
+      "nodes": [
+        "I",
+        "C"
+      ],
+      "type": "diagonal",
+      "length_mm": 1903.6,
+      "angle_deg": 65.0
+    },
+    {
+      "nodes": [
+        "J",
+        "D"
+      ],
+      "type": "diagonal",
+      "length_mm": 1903.6,
+      "angle_deg": 65.0
+    },
+    {
+      "nodes": [
+        "L",
+        "F"
+      ],
+      "type": "diagonal",
+      "length_mm": 2032.5,
+      "angle_deg": 58.1
+    }
+  ],
+  "score": 1000000.0,
+  "raw_TL_kNm": 0.0,
+  "reactions": {
+    "A": {
+      "Rx_kN": -0.0,
+      "Ry_kN": 2000.0
+    },
+    "F": {
+      "Rx_kN": 0.0,
+      "Ry_kN": 2000.0
+    }
+  },
+  "candidates": [
+    {
+      "candidate_id": null,
+      "n_intermediate": null,
+      "x_positions": null,
+      "result": null,
+      "reasoning": "",
+      "agent_trace": null
+    }
+  ],
+  "elapsed_time_s": 114.2,
+  "models": {
+    "topology_agent": "qwen3:32b",
+    "critic_agent": "qwen3:32b",
+    "revision_agent": "qwen3:32b",
+    "decision_agent": "qwen3:32b"
+  },
+  "all_stm_candidates": [
+    {
+      "candidate_id": "G1",
+      "n_intermediate": 0,
+      "score": 0.001,
+      "nodes": {
+        "A": {
+          "x": 225.0,
+          "y": 125.0
+        },
+        "B": {
+          "x": 6675.0,
+          "y": 125.0
+        },
+        "C": {
+          "x": 2225.0,
+          "y": 1850.0
+        },
+        "D": {
+          "x": 4675.0,
+          "y": 1850.0
+        }
+      },
+      "support_nodes": {
+        "A": "pin",
+        "B": "roller"
+      },
+      "members": [
+        {
+          "nodes": [
+            "C",
+            "D"
+          ],
+          "type": "horizontal",
+          "length_mm": 2450.0,
+          "force_kN": -2318.8
+        },
+        {
+          "nodes": [
+            "A",
+            "B"
+          ],
+          "type": "horizontal",
+          "length_mm": 6450.0,
+          "force_kN": 2318.8
+        },
+        {
+          "nodes": [
+            "C",
+            "A"
+          ],
+          "type": "diagonal",
+          "length_mm": 2641.1,
+          "angle_deg": 40.8,
+          "force_kN": -3062.2
+        },
+        {
+          "nodes": [
+            "D",
+            "B"
+          ],
+          "type": "diagonal",
+          "length_mm": 2641.1,
+          "angle_deg": 40.8,
+          "force_kN": -3062.2
+        }
+      ],
+      "reactions": {
+        "A": {
+          "Rx_kN": -0.0,
+          "Ry_kN": 2000.0
+        },
+        "B": {
+          "Rx_kN": 0.0,
+          "Ry_kN": 2000.0
+        }
+      },
+      "raw_TL_kNm": 14956.5
+    }
+  ]
+}

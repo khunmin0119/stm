@@ -172,7 +172,7 @@ def design_all_candidates(json_path, fck, fy, bw, bearing_plate, cover,
             cand['member_forces'], cand['reactions'], cand['supports'],
             fck=fck, fy=fy, bw=bw, bearing_plate=bearing_plate,
             cover=cover, stirrup_dia=stirrup_dia, main_bar_dia=main_bar_dia,
-            phi=phi, beam_height=H, loads=loads, verbose=verbose
+            phi=phi, beam_height=H, verbose=verbose
         )
 
         # 전체 노드 PASS 여부
@@ -199,18 +199,6 @@ def design_all_candidates(json_path, fck, fy, bw, bearing_plate, cover,
                 design, beam_length=L, beam_height=H, loads=loads,
                 save_path=save_path,
                 title=f'C{cid}: {n_pairs} pairs ({n_nodes}n) — KDS [{status_tag}] — Score={score:.4f}'
-            )
-
-            # ── 절점 형상 개별 시각화 ──
-            shape_path = os.path.join(save_dir,
-                f'node_shapes_C{cid}_{n_pairs}pairs_{status_tag}.png')
-            plot_node_shapes(
-                nodes=cand['nodes'],
-                connections=cand['connections'],
-                member_forces=cand['member_forces'],
-                design_result=design,
-                title=f'절점 형상 — C{cid}: {n_pairs}쌍 {n_nodes}노드 [{status_tag}]',
-                save_path=shape_path
             )
 
     # 결과 요약
@@ -242,7 +230,7 @@ def design_all_candidates(json_path, fck, fy, bw, bearing_plate, cover,
 def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
                         fck, fy, bw, bearing_plate, cover,
                         stirrup_dia, main_bar_dia, phi=0.75,
-                        beam_height=None, loads=None, verbose=True):
+                        beam_height=None, verbose=True):
     """
     KDS 14 20 24 기반 노드 설계.
 
@@ -258,8 +246,6 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
         cover, stirrup_dia, main_bar_dia: mm
         phi: 강도감소계수 (기본 0.75)
         beam_height: mm (보 전체 높이, None이면 자동 계산)
-        loads: list [(x_mm, P_kN), ...] — 외부 하중 점하중 (하중점 노드 판별용).
-               None이면 상단 노드 모두 일반 chord로 가정.
 
     Returns:
         dict with all design results
@@ -276,28 +262,19 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
 
     # ── 0. 기본값 계산 ──
     all_y = [y for _, (x, y) in nodes.items()]  # fix: handle both list and tuple
-    y_top_max = max(all_y)
-    y_bot_min = min(all_y)
     if beam_height is None:
-        beam_height = y_top_max - y_bot_min + 2 * cover
+        beam_height = max(all_y) - min(all_y) + 2 * cover
 
-    # 유효깊이 & 타이/스트럿 폭
+    # 유효깊이 & 타이 폭
     d = beam_height - cover - stirrup_dia - main_bar_dia - main_bar_dia / 2
-    # wt: 입력 cover/stirrup/bar 기반 + 노드 좌표(2*y_bot)와 일관성
-    wt_input = 2 * (cover + stirrup_dia + main_bar_dia + main_bar_dia / 2)
-    wt_input = max(wt_input, 250)
-    wt_geom = 2 * y_bot_min  # 노드 좌표에서 역산
-    wt = wt_geom if wt_geom > 0 else wt_input
-    # ws: 상단 chord 폭 (노드 좌표에서 역산)
-    ws = 2 * (beam_height - y_top_max)
-    if ws <= 0:
-        ws = wt_input  # fallback
+    wt = 2 * (cover + stirrup_dia + main_bar_dia + main_bar_dia / 2)
+    wt = max(wt, 250)
 
     if verbose:
         print(f"\n  [Nodal Zone Design — KDS 14 20 24]")
         print(f"    fck={fck}MPa, fy={fy}MPa, bw={bw}mm, φ={phi}")
         print(f"    Bearing plate={bearing_plate}mm, cover={cover}mm")
-        print(f"    d={d:.1f}mm, wt={wt:.1f}mm, ws={ws:.1f}mm")
+        print(f"    d={d:.1f}mm, wt={wt:.1f}mm")
 
     # ── Helper: force lookup ──
     def get_force(n1, n2):
@@ -309,100 +286,30 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
         c = nodes[nid]
         return (c[0], c[1]) if isinstance(c, (list, tuple)) else (c[0], c[1])
 
-    # ── Helper: 수직 타이 폭 — 양옆 노드 x 정사영 중점 합산 ──
+    # ── Helper: 수직 타이 폭 자동 계산 ──
     def compute_vertical_tie_width(nid_top, nid_bot):
-        """
-        수직 타이 폭 = 좌측 인접 거리/2 + 우측 인접 거리/2.
-
-        gen_training_v2.py의 get_w_vert 로직 (양옆 중점 합산).
-        예: x=1225, 좌(225)/우(2225) → (1225-225)/2 + (2225-1225)/2 = 1000mm
-        대칭 배치에서는 종전 '최소 거리' 방식과 같은 값이지만,
-        비대칭일 때 더 정확한 정사영 폭을 산출함.
-        """
-        # 수직 타이는 양 끝 x 동일 — 하단 노드 기준
-        x_n = get_coords(nid_bot)[0]
-
-        # 모든 노드 x좌표 정렬 (부동소수 안정용 1mm 반올림)
-        all_xs = sorted(set(round(get_coords(n)[0], 1) for n in nodes))
-
-        # x_n에 가장 가까운 값 매칭 (부동소수 오차 대비)
-        x_n_rounded = round(x_n, 1)
-        if x_n_rounded not in all_xs:
-            x_n_rounded = min(all_xs, key=lambda x: abs(x - x_n_rounded))
-
-        idx = all_xs.index(x_n_rounded)
-        left = (all_xs[idx] - all_xs[idx - 1]) / 2 if idx > 0 else 0
-        right = (all_xs[idx + 1] - all_xs[idx]) / 2 if idx < len(all_xs) - 1 else 0
-        result = left + right
-
-        # fallback: 양옆 노드 모두 없을 경우 wt 반환
-        return result if result > 0 else wt
-
-    # ── Helper: 노드별 분류 (지점/하중점/일반) ──
-    def is_bottom_node(nid):
-        """하단 chord에 속한 노드인지."""
-        y_n = get_coords(nid)[1]
-        return abs(y_n - y_bot_min) < 50
-
-    def is_top_node(nid):
-        """상단 chord에 속한 노드인지."""
-        y_n = get_coords(nid)[1]
-        return abs(y_n - y_top_max) < 50
-
-    def is_load_node(nid):
-        """외부 점하중이 작용하는 노드인지 (loads 인자 기반)."""
-        if loads is None:
-            return False
-        x_n, y_n = get_coords(nid)
-        if not is_top_node(nid):
-            return False
-        for lx, _P in loads:
-            if abs(x_n - lx) < 50:
-                return True
-        return False
-
-    # ── Helper: 노드의 수평 부재 폭 (지점/하중점=bearing, 일반=wt or ws) ──
-    def get_horizontal_width(nid):
-        """그 노드에 연결된 수평 방향 폭 (정사영의 cos 성분)."""
-        if nid in supports:
-            return bearing_plate
-        if is_load_node(nid):
-            return bearing_plate
-        if is_bottom_node(nid):
-            return wt
-        if is_top_node(nid):
-            return ws
-        # 중간 높이 노드 (드물지만 안전 fallback)
-        return wt
-
-    # ── Helper: 노드 시점에서 본 대각선 스트럿 폭 ──
-    # gen_training_v2.py의 get_w_diag 로직과 동일.
-    # 한 대각선 부재가 양 끝 노드에서 다른 w_act를 가질 수 있음.
-    def get_diag_width_at_node(nid, member_angle):
-        """
-        노드 nid에서 본 대각선 부재의 실제 폭.
-            w_act = w_h × |cos(angle)| + w_v × |sin(angle)|
-        여기서:
-          - w_h = 노드의 수평 부재 폭 (bearing/wt/ws)
-          - w_v = 노드의 수직 부재 폭 (compute_vertical_tie_width 로직)
-          - angle은 절댓값 처리된 부재 경사각
-        """
-        sin_a = abs(math.sin(member_angle))
-        cos_a = abs(math.cos(member_angle))
-        w_h = get_horizontal_width(nid)
-        # 수직 폭: 같은 x 정사영 합산 (compute_vertical_tie_width 로직 재사용)
-        # nid가 수직 타이 노드가 아니어도 동일 공식 적용
-        x_n = get_coords(nid)[0]
-        all_xs = sorted(set(round(get_coords(n)[0], 1) for n in nodes))
-        x_n_rounded = round(x_n, 1)
-        if x_n_rounded not in all_xs:
-            x_n_rounded = min(all_xs, key=lambda x: abs(x - x_n_rounded))
-        idx = all_xs.index(x_n_rounded)
-        left = (all_xs[idx] - all_xs[idx - 1]) / 2 if idx > 0 else 0
-        right = (all_xs[idx + 1] - all_xs[idx]) / 2 if idx < len(all_xs) - 1 else 0
-        w_v = (left + right) if (left + right) > 0 else wt
-
-        return w_h * cos_a + w_v * sin_a
+        """수직 타이의 폭 = 같은 높이의 인접 노드까지 최소 거리."""
+        tx, ty = get_coords(nid_top)
+        bx, by = get_coords(nid_bot)
+        
+        # 두 노드 각각에서 같은 높이의 인접 노드 거리 계산
+        min_dist = float('inf')
+        for nid in nodes:
+            if nid == nid_top and nid == nid_bot:
+                continue
+            nx, ny = get_coords(nid)
+            # 상단 노드와 같은 높이
+            if abs(ny - ty) < 50 and nid != nid_top:
+                dist = abs(nx - tx)
+                if 50 < dist < min_dist:
+                    min_dist = dist
+            # 하단 노드와 같은 높이
+            if abs(ny - by) < 50 and nid != nid_bot:
+                dist = abs(nx - bx)
+                if 50 < dist < min_dist:
+                    min_dist = dist
+        
+        return min_dist if min_dist < float('inf') else wt
 
     # ── 타이 폭 사전 계산 (수직/수평 구분) ──
     tie_widths = {}
@@ -414,20 +321,14 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
         x1, y1 = get_coords(n1)
         x2, y2 = get_coords(n2)
         dx, dy = abs(x2 - x1), abs(y2 - y1)
-
+        
         if dx < 50 and dy > 500:  # 수직 타이
             tw = compute_vertical_tie_width(n1, n2)
             tie_widths[(n1, n2)] = tw
             tie_widths[(n2, n1)] = tw
-        else:  # 수평 타이 — 상단/하단 구분
-            if abs(y1 - y_bot_min) < 50 and abs(y2 - y_bot_min) < 50:
-                tw_h = wt  # 하단 chord 타이
-            elif abs(y1 - y_top_max) < 50 and abs(y2 - y_top_max) < 50:
-                tw_h = ws  # 상단 chord 타이 (드물지만 가능)
-            else:
-                tw_h = wt
-            tie_widths[(n1, n2)] = tw_h
-            tie_widths[(n2, n1)] = tw_h
+        else:  # 수평/기타 타이
+            tie_widths[(n1, n2)] = wt
+            tie_widths[(n2, n1)] = wt
 
     if verbose and any(tw != wt for tw in tie_widths.values()):
         print(f"\n    Tie widths (auto-computed):")
@@ -482,9 +383,6 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
                   f"{info['n_tension']:>2d} {info['n_compression']:>2d}")
 
     # ── 3. 스트럿 종류 & 폭 자동 판별 ──
-    # 대각선 스트럿: 양 끝 노드에서 각각 다른 w_act를 가질 수 있음
-    # (gen_training_v2.py의 get_w_diag 로직 — 노드별 정사영)
-    # 요약값으로는 더 작은 w_act를 사용 (보수적 판정).
     strut_results = {}
     for conn in connections:
         n1, n2 = conn[0], conn[1]
@@ -507,31 +405,29 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
             beta_s = 0.6
             stype = 'Bottle-shaped'
 
-        # 실제 스트럿 폭 — 노드별 정사영 (수정 ④)
+        # 실제 스트럿 폭
         if dy > 50 and dx > 50:  # 대각선
-            w_act_n1 = get_diag_width_at_node(n1, angle)
-            w_act_n2 = get_diag_width_at_node(n2, angle)
-            wsb = min(w_act_n1, w_act_n2)  # 요약: 더 작은 쪽이 critical
-        elif dx < 50:  # 수직 스트럿 (드물지만)
-            tw_v = compute_vertical_tie_width(n1, n2)
-            w_act_n1 = w_act_n2 = tw_v
-            wsb = tw_v
-        else:  # 수평 스트럿 (상단 chord 등)
-            if abs(y1 - y_top_max) < 50:
-                wsb = ws
-            else:
-                wsb = wt
-            w_act_n1 = w_act_n2 = wsb
+            # 지지점/하중점 근처: lb 사용
+            # 판단: 연결된 노드 중 지지점 또는 하중점(반력 있는 곳)에 가까우면 lb
+            lb_eff = bearing_plate
+            # 하중점 간 대각선이면 하중 간격 사용
+            n1_has_reaction = n1 in reactions or n1 in supports
+            n2_has_reaction = n2 in reactions or n2 in supports
+            if not n1_has_reaction and not n2_has_reaction:
+                # 두 노드 모두 반력 없음 → 하중 간격 추정
+                lb_eff = dx  # 수평 거리를 지압 길이로 사용
+            wsb = lb_eff * math.sin(angle) + wt * math.cos(angle)
+        else:
+            # 수평 스트럿: 등가응력블록에서 결정
+            # ws ≈ a (등가응력블록 깊이) 또는 최소 ws
+            wsb = max(d * 0.15, 300)  # 기본값, 이후 정밀 계산 가능
 
         # 요구 스트럿 폭
         w_s_req = (Fu * 1e3) / (phi * 0.85 * beta_s * fck * bw)
 
         strut_results[(n1, n2)] = {
             'force_kN': Fu, 'beta_s': beta_s, 'type': stype,
-            'angle_deg': math.degrees(angle),
-            'w_actual': wsb,           # 요약 (보수적 = min)
-            'w_act_n1': w_act_n1,      # n1 시점 폭
-            'w_act_n2': w_act_n2,      # n2 시점 폭
+            'angle_deg': math.degrees(angle), 'w_actual': wsb,
             'w_required': w_s_req, 'ok': wsb >= w_s_req, 'length': length
         }
 
@@ -565,7 +461,7 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
             Fu = abs(m['force']) / 1000
             w_req = (Fu * 1e3) / (phi * 0.85 * beta_n * fck * bw)
 
-            # 실제 폭 결정 — 노드 nid 시점에서 본 폭
+            # 실제 폭 결정
             dx, dy = abs(m['dx']), abs(m['dy'])
             if m['force'] > 0:  # 타이
                 key_tw = (n1, n2) if (n1, n2) in tie_widths else (n2, n1)
@@ -573,12 +469,7 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
             else:  # 스트럿
                 key = (n1, n2) if (n1, n2) in strut_results else (n2, n1)
                 if key in strut_results:
-                    sr = strut_results[key]
-                    # 대각선이면 nid 쪽 폭 사용 (수정 ④)
-                    if 'w_act_n1' in sr and 'w_act_n2' in sr:
-                        w_act = sr['w_act_n1'] if nid == key[0] else sr['w_act_n2']
-                    else:
-                        w_act = sr['w_actual']
+                    w_act = strut_results[key]['w_actual']
                 else:
                     w_act = 300
 
@@ -607,7 +498,7 @@ def design_nodal_zones(nodes, connections, member_forces, reactions, supports,
         'strut_results': strut_results,
         'node_verification': node_verification,
         'tie_widths': tie_widths,
-        'd': d, 'wt': wt, 'ws': ws,
+        'd': d, 'wt': wt,
         'bearing_plate': bearing_plate,
         'fck': fck, 'fy': fy, 'bw': bw, 'phi': phi,
     }
@@ -653,13 +544,16 @@ def plot_stm_with_nodal_zones(nodes, connections, member_forces, reactions, supp
         ax_d, ay_d = ddx / l, ddy / l  # 부재 방향
 
         w_mid = w_end * bulge
+        # 10개 점으로 부드러운 곡선
         n_pts = 10
         top_pts = []
         bot_pts = []
         for i in range(n_pts + 1):
-            t = i / n_pts
+            t = i / n_pts  # 0 ~ 1
+            # 현재 위치
             cx = x1 + ddx * t
             cy = y1 + ddy * t
+            # 폭: 양 끝은 w_end, 가운데는 w_mid (sin 곡선)
             w_here = w_end + (w_mid - w_end) * math.sin(math.pi * t)
             top_pts.append((cx + px * w_here / 2, cy + py * w_here / 2))
             bot_pts.append((cx - px * w_here / 2, cy - py * w_here / 2))
@@ -672,6 +566,7 @@ def plot_stm_with_nodal_zones(nodes, connections, member_forces, reactions, supp
     L, H = beam_length, beam_height
     ax.add_patch(mpatches.Rectangle((0, 0), L, H, lw=1, ec='#d1d5db', fc='#fafafa', alpha=0.3))
 
+    # 시각화용 폭 스케일 (실제 값이 너무 크면 보기 어려우므로 축소)
     vis_scale = 0.5
 
     # ── 스트럿 (폭 있는 형태) ──
@@ -704,6 +599,7 @@ def plot_stm_with_nodal_zones(nodes, connections, member_forces, reactions, supp
         ls = '--' if f > 0 else '-'
         ax.plot([x1, x2], [y1, y2], ls, color=color, lw=1.5, zorder=2, alpha=0.7)
 
+        # 부재력 라벨
         mx = (x1 + x2) / 2
         my = (y1 + y2) / 2
         dx, dy = x2 - x1, y2 - y1
@@ -721,7 +617,7 @@ def plot_stm_with_nodal_zones(nodes, connections, member_forces, reactions, supp
     # ── 노드 ──
     zone_c = {'CCC': '#3b82f6', 'CCT': '#f59e0b', 'CTT': '#ef4444'}
     mid_x = beam_length / 2
-
+    
     for nid in nodes:
         x, y = get_coords(nid)
         ntype = node_types[nid]['type']
@@ -731,18 +627,19 @@ def plot_stm_with_nodal_zones(nodes, connections, member_forces, reactions, supp
         status_color = '#16a34a' if nv['all_ok'] else '#dc2626'
 
         ax.plot(x, y, 'o', ms=14, color=color, mec='black', mew=2, zorder=5)
-
-        if y > H / 2:
+        
+        # 라벨 위치: 보 바깥쪽으로 치우기
+        if y > H / 2:  # 상단 노드 → 위로
             oy = 280
-            if x < mid_x * 0.5:       ox = -200
-            elif x > mid_x * 1.5:     ox = 200
-            else:                      ox = 0
-        else:
+            if x < mid_x * 0.5:       ox = -200   # 왼쪽 끝 → 왼쪽으로
+            elif x > mid_x * 1.5:     ox = 200    # 오른쪽 끝 → 오른쪽으로
+            else:                      ox = 0      # 중간 → 가운데
+        else:  # 하단 노드 → 아래로
             oy = -280
             if x < mid_x * 0.5:       ox = -200
             elif x > mid_x * 1.5:     ox = 200
             else:                      ox = 0
-
+        
         ax.annotate(f'{nid}\n{ntype}\n[{status}]',
                     xy=(x, y), xytext=(x + ox, y + oy),
                     fontsize=11, fontweight='bold', color='black',
@@ -801,200 +698,6 @@ def plot_stm_with_nodal_zones(nodes, connections, member_forces, reactions, supp
     return fig
 
 
-def plot_node_shapes(nodes, connections, member_forces, design_result,
-                     title=None, save_path=None):
-    """
-    각 노드의 절점 영역 기하학적 형상 개별 시각화 (KDS 14 20 24).
-
-    CCC → 육각형 절점 영역
-    CCT → 삼각형 절점 영역 (lb 하단, wt 측면, wsb 대각)
-    CTT → 평행사변형 절점 영역
-
-    Args:
-        nodes: dict {'A': [x, y], ...}
-        connections: list [['A','B'], ...]
-        member_forces: dict {(n1, n2): force_N, ...}
-        design_result: design_nodal_zones() 반환값
-        title: 그림 제목
-        save_path: 저장 경로 (None이면 저장 안 함)
-    """
-    node_types    = design_result['node_types']
-    node_verif    = design_result['node_verification']
-    bearing_plate = design_result['bearing_plate']
-    wt            = design_result['wt']
-
-    def get_force(n1, n2):
-        if (n1, n2) in member_forces: return member_forces[(n1, n2)]
-        if (n2, n1) in member_forces: return member_forces[(n2, n1)]
-        return 0
-
-    def get_coords(nid):
-        c = nodes[nid]
-        return (c[0], c[1])
-
-    # ── 각 노드별 연결 부재 & 방향 각도 수집 ──
-    node_members = {nid: [] for nid in nodes}
-    for conn in connections:
-        n1, n2 = conn[0], conn[1]
-        f = get_force(n1, n2)
-        x1, y1 = get_coords(n1)
-        x2, y2 = get_coords(n2)
-        node_members[n1].append({
-            'other': n2, 'force': f,
-            'angle': math.atan2(y2 - y1, x2 - x1)
-        })
-        node_members[n2].append({
-            'other': n1, 'force': f,
-            'angle': math.atan2(y1 - y2, x1 - x2)
-        })
-
-    # ── 레이아웃 ──
-    n     = len(nodes)
-    ncols = min(4, n)
-    nrows = math.ceil(n / ncols)
-    fig, axes = plt.subplots(nrows, ncols,
-                              figsize=(4.5 * ncols, 4.5 * nrows),
-                              squeeze=False)
-
-    for idx, nid in enumerate(sorted(nodes.keys())):
-        row, col = divmod(idx, ncols)
-        ax = axes[row][col]
-
-        ntype  = node_types[nid]['type']
-        bn     = node_types[nid]['beta_n']
-        nv     = node_verif[nid]
-        all_ok = nv['all_ok']
-
-        L  = 130   # 화살표 길이 (도면 단위)
-        hw = 20    # 부재 밴드 반폭
-
-        # ── 부재 밴드 & 화살표 ──
-        for m in node_members[nid]:
-            a  = m['angle']
-            dx = math.cos(a) * L
-            dy = math.sin(a) * L
-            px = -math.sin(a) * hw
-            py =  math.cos(a) * hw
-
-            is_tie  = m['force'] > 0
-            fc_band = '#FCEBEB' if is_tie else '#E6F1FB'
-            ec_band = '#F09595' if is_tie else '#85B7EB'
-            arr_col = '#A32D2D' if is_tie else '#185FA5'
-
-            # 밴드 (사다리꼴)
-            band = Polygon([
-                (-px, -py), (px, py),
-                (dx + px, dy + py), (dx - px, dy - py)
-            ], closed=True, facecolor=fc_band, edgecolor=ec_band,
-               linewidth=0.5, alpha=0.7, zorder=1)
-            ax.add_patch(band)
-
-            # 화살표 (절점 방향으로 압축/인장 표시)
-            ax.annotate('',
-                        xy=(dx * 0.85, dy * 0.85),
-                        xytext=(dx * 0.45, dy * 0.45),
-                        arrowprops=dict(arrowstyle='->', color=arr_col, lw=2.0),
-                        zorder=3)
-
-            # 부재 이름 라벨
-            mname = (f"{nid}{m['other']}" if nid < m['other']
-                     else f"{m['other']}{nid}")
-            ax.text(dx * 1.18, dy * 1.18, mname,
-                    ha='center', va='center', fontsize=7.5,
-                    color=arr_col, fontweight='bold')
-
-        # ── 절점 영역 다각형 ──
-        zone_fc = '#B5D4F4' if ntype != 'CTT' else '#F7C1C1'
-        zone_ec = '#185FA5' if ntype != 'CTT' else '#A32D2D'
-
-        if ntype == 'CCC':
-            # 정육각형
-            r   = 32
-            pts = [
-                (r * math.cos(math.pi / 6 + i * math.pi / 3),
-                 r * math.sin(math.pi / 6 + i * math.pi / 3))
-                for i in range(6)
-            ]
-
-        elif ntype == 'CCT':
-            # 직각삼각형: 하단=lb(지압판), 측면=wt(타이), 빗변=wsb(스트럿 면)
-            lb_px = min(bearing_plate / 10, 55)
-            wt_px = min(wt / 10, 40)
-            pts = [
-                (-lb_px / 2, -wt_px / 2),
-                ( lb_px / 2, -wt_px / 2),
-                (-lb_px / 2,  wt_px / 2),
-            ]
-
-        else:  # CTT
-            # 평행사변형: 양쪽 타이 + 상단 스트럿
-            lb_px = min(bearing_plate / 12, 45)
-            wt_px = min(wt / 10, 38)
-            shift = 12
-            pts = [
-                (-lb_px / 2,         -wt_px / 2),
-                ( lb_px / 2,         -wt_px / 2),
-                ( lb_px / 2 + shift,  wt_px / 2),
-                (-lb_px / 2 + shift,  wt_px / 2),
-            ]
-
-        ax.add_patch(Polygon(pts, closed=True,
-                             facecolor=zone_fc, edgecolor=zone_ec,
-                             linewidth=1.5, zorder=4))
-
-        # ── 절점 이름 & 타입 라벨 ──
-        lbl_col = '#0C447C' if ntype != 'CTT' else '#791F1F'
-        ax.text(0, 0, f"{nid}  {ntype}\nβn = {bn:.1f}",
-                ha='center', va='center', fontsize=9,
-                fontweight='bold', color=lbl_col, zorder=5)
-
-        # ── PASS / FAIL ──
-        s_str = 'PASS' if all_ok else 'FAIL'
-        s_col = '#16a34a' if all_ok else '#dc2626'
-        ax.text(0, -162, s_str,
-                ha='center', va='bottom', fontsize=10,
-                fontweight='bold', color=s_col)
-
-        # ── 가장 critical한 부재의 w_req / w_act 표시 ──
-        if nv['checks']:
-            worst = max(nv['checks'],
-                        key=lambda c: c['w_required'] / max(c['w_actual'], 1))
-            w_color = '#dc2626' if not worst['ok'] else '#5F5E5A'
-            ax.text(0, 158,
-                    f"w_req={worst['w_required']:.0f}\nw_act={worst['w_actual']:.0f}",
-                    ha='center', va='top', fontsize=7.5, color=w_color)
-
-        ax.set_xlim(-180, 180)
-        ax.set_ylim(-180, 180)
-        ax.set_aspect('equal')
-        ax.axis('off')
-
-    # ── 빈 subplot 숨기기 ──
-    for idx in range(n, nrows * ncols):
-        row, col = divmod(idx, ncols)
-        axes[row][col].set_visible(False)
-
-    # ── 전체 범례 ──
-    legend_handles = [
-        mpatches.Patch(facecolor='#E6F1FB', edgecolor='#85B7EB', label='스트럿 (압축)'),
-        mpatches.Patch(facecolor='#FCEBEB', edgecolor='#F09595', label='타이 (인장)'),
-        mpatches.Patch(facecolor='#B5D4F4', edgecolor='#185FA5', label='CCC / CCT 절점'),
-        mpatches.Patch(facecolor='#F7C1C1', edgecolor='#A32D2D', label='CTT 절점'),
-    ]
-    fig.legend(handles=legend_handles, loc='lower center', ncol=4,
-               fontsize=9, framealpha=0.9, bbox_to_anchor=(0.5, -0.01))
-
-    fig.suptitle(title or '절점 형상 (KDS 14 20 24)',
-                 fontsize=13, fontweight='bold', y=1.01)
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
-        print(f"  >> Saved: {save_path}")
-    plt.close()
-    return fig
-
-
 # ═══════════════════════════════════════════════════
 # TEST: 교과서 예제 10.2 (STM-1)
 # ═══════════════════════════════════════════════════
@@ -1038,10 +741,4 @@ if __name__ == "__main__":
         loads=loads,
         save_path='/home/claude/stm_nodal_zones_auto.png',
         title='STM-1 with Nodal Zones — Automated (KDS 14 20 24 예제 10.2)'
-    )
-
-    plot_node_shapes(
-        nodes, connections, member_forces, result,
-        title='절점 형상 — KDS 예제 10.2 (STM-1)',
-        save_path='/home/claude/node_shapes_example.png'
     )
